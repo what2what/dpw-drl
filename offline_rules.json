@@ -1,0 +1,5 @@
+{
+  "rule_0": "add(process_time, remaining_ops)",
+  "rule_1": "mul(machine_load, -1)",
+  "rule_2": "sub(earliest_start, current_time)"
+}

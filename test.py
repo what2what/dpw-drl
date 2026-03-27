@@ -16,6 +16,9 @@ def test():
         while True:
             data, op_unfinished= env.get_graph_data()
             
+            # Get window tensor if using offline rules
+            window_tensor = env.get_state_with_windows()
+            
             # Apply Dynamic Priority Window (DPW) filtering
             use_dpw = getattr(args, 'use_dpw', False)
             use_gp_dpw = getattr(args, 'use_gp_dpw', False)
@@ -41,12 +44,17 @@ def test():
                 filtered_avai_ops = avai_ops
                 original_indices = list(range(len(avai_ops)))
             
-            action_idx, action_prob = policy(filtered_avai_ops, data, op_unfinished, env.jsp_instance.graph.max_process_time, greedy=True)
+            action_idx, action_prob = policy(filtered_avai_ops, data, op_unfinished, env.jsp_instance.graph.max_process_time, greedy=True, window_tensor=window_tensor)
             
-            # Map action index back to original avai_ops
-            original_action_idx = original_indices[action_idx]
+            # Map action index back to original avai_ops if not using offline rules
+            if not getattr(args, 'use_offline_rules', False):
+                original_action_idx = original_indices[action_idx]
+                selected_op = avai_ops[original_action_idx]
+            else:
+                # For offline rules, action_idx is already the window index, step() will handle it
+                selected_op = action_idx
             
-            avai_ops, _, done = env.step(avai_ops[original_action_idx])
+            avai_ops, _, done = env.step(selected_op)
             
             if done:
                 ed = time.time()
@@ -67,9 +75,14 @@ if __name__ == '__main__':
     
     policy.load_state_dict(torch.load(args.load_weight, map_location=args.device), False)
     
-    # Load GP rule if using GP-DPW
+    # Load GP rule if using GP-DPW or offline rules
     use_gp_dpw = getattr(args, 'use_gp_dpw', False)
-    if use_gp_dpw:
+    use_offline_rules = getattr(args, 'use_offline_rules', False)
+    
+    if use_offline_rules:
+        # Offline rules are loaded automatically in JSP_Env.__init__
+        print("Using offline GP rules for window selection")
+    elif use_gp_dpw:
         if os.path.exists(args.gp_rule_path):
             print(f"Loading GP rule from {args.gp_rule_path}")
             gp_evolver = GPPriorityRuleEvolver()  # Create instance to get toolbox

@@ -37,7 +37,46 @@ class REINFORCE(nn.Module):
             if isinstance(m, Linear):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu')
         
-    def forward(self, avai_ops, data, op_unfinished, max_process_time, greedy=False):
+    def forward(self, avai_ops, data, op_unfinished, max_process_time, greedy=False, window_tensor=None):
+        # Check if using offline rules (window selection mode)
+        if getattr(self.args, 'use_offline_rules', False) and window_tensor is not None:
+            return self._forward_window_selection(window_tensor, greedy)
+        
+        # Original operation selection mode
+        return self._forward_operation_selection(avai_ops, data, op_unfinished, max_process_time, greedy)
+    
+    def _forward_window_selection(self, window_tensor, greedy=False):
+        """Forward pass for window selection mode."""
+        # window_tensor shape: (num_rules, num_operations)
+        # Convert to torch tensor if needed
+        if not isinstance(window_tensor, torch.Tensor):
+            window_tensor = torch.tensor(window_tensor, dtype=torch.float32, device=self.args.device)
+        
+        # We need to score each window/rule
+        # For simplicity, we'll use a simple scoring mechanism
+        # In practice, you might want a more sophisticated network
+        num_rules = window_tensor.shape[0]
+        
+        # Simple scoring: sum of window values (can be improved)
+        scores = window_tensor.sum(dim=1)  # Shape: (num_rules,)
+        
+        # Apply softmax to get probabilities
+        probs = F.softmax(scores, dim=0)
+        dist = Categorical(probs)
+        
+        if greedy:
+            idx = torch.argmax(scores)
+        else:
+            idx = dist.sample()
+        
+        self.log_probs.append(dist.log_prob(idx))
+        self.entropies.append(dist.entropy())
+        return idx.item(), probs[idx].item()
+    
+    def _forward_operation_selection(self, avai_ops, data, op_unfinished, max_process_time, greedy=False):
+        """Original forward pass for operation selection mode."""
+    def _forward_operation_selection(self, avai_ops, data, op_unfinished, max_process_time, greedy=False):
+        """Original forward pass for operation selection mode."""
         # 1. 使用 GNN 获取当前所有工序和机器的嵌入向量 (Embedding)
         x_dict = self.gnn(data)
 

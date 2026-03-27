@@ -74,8 +74,21 @@ class GPPriorityRuleEvolver:
     
     def _setup_primitive_set(self):
         """Setup the primitive set for GP (functions and terminals)."""
-        # Create primitive set
-        self.pset = gp.PrimitiveSet("MAIN", arity=0)
+        # Create primitive set with arity equal to number of features
+        num_features = 10  # Number of features we extract
+        self.pset = gp.PrimitiveSet("MAIN", arity=num_features)
+        
+        # Rename arguments to match feature names
+        self.pset.renameArguments(ARG0="process_time")
+        self.pset.renameArguments(ARG1="remaining_ops")
+        self.pset.renameArguments(ARG2="job_progress")
+        self.pset.renameArguments(ARG3="machine_load")
+        self.pset.renameArguments(ARG4="machine_util")
+        self.pset.renameArguments(ARG5="earliest_start")
+        self.pset.renameArguments(ARG6="slack_time")
+        self.pset.renameArguments(ARG7="current_time")
+        self.pset.renameArguments(ARG8="total_jobs")
+        self.pset.renameArguments(ARG9="total_machines")
         
         # Add functions (operators)
         self.pset.addPrimitive(operator.add, 2, name="add")
@@ -88,24 +101,8 @@ class GPPriorityRuleEvolver:
         self.pset.addPrimitive(math.log, 1, name="log")
         self.pset.addPrimitive(math.exp, 1, name="exp")
         
-        # Add terminals (features from FJSP environment)
-        # Operation-level features
-        self.pset.addTerminal("process_time", "process_time")  # Processing time of operation
-        self.pset.addTerminal("remaining_ops", "remaining_ops")  # Remaining operations in job
-        self.pset.addTerminal("job_progress", "job_progress")  # Job completion percentage
-        self.pset.addTerminal("machine_load", "machine_load")  # Current load of target machine
-        self.pset.addTerminal("machine_util", "machine_util")  # Machine utilization rate
-        self.pset.addTerminal("earliest_start", "earliest_start")  # Earliest possible start time
-        self.pset.addTerminal("slack_time", "slack_time")  # Slack time (latest start - earliest start)
-        
-        # System-level features
-        self.pset.addTerminal("current_time", "current_time")  # Current system time
-        self.pset.addTerminal("total_jobs", "total_jobs")  # Total number of jobs
-        self.pset.addTerminal("total_machines", "total_machines")  # Total number of machines
-        
-        # Constants
-        for i in range(-10, 11):
-            self.pset.addTerminal(float(i), f"const_{i}")
+        # Add ephemeral constants (random constants)
+        self.pset.addEphemeralConstant("rand_const", lambda: random.uniform(-10, 10))
     
     def _protected_div(self, left, right):
         """Protected division to avoid division by zero."""
@@ -202,24 +199,37 @@ class GPPriorityRuleEvolver:
             for op in avai_ops:
                 # Extract features for this operation
                 features = self._extract_operation_features(env, op)
+                feature_values = (
+                    features['process_time'],
+                    features['remaining_ops'],
+                    features['job_progress'],
+                    features['machine_load'],
+                    features['machine_util'],
+                    features['earliest_start'],
+                    features['slack_time'],
+                    features['current_time'],
+                    features['total_jobs'],
+                    features['total_machines']
+                )
                 
-                # Evaluate rule tree with features
                 try:
-                    priority = rule_func(**features)
+                    priority = rule_func(*feature_values)
                     priorities.append(float(priority))
-                except:
-                    # If evaluation fails, assign neutral priority
+                except Exception as e:
+                    print(f"Error evaluating rule: {e}")
                     priorities.append(0.0)
             
             # Select operation with highest priority
             if priorities:
                 best_idx = np.argmax(priorities)
-                selected_op = avai_ops[best_idx]
+                selected_op = avai_ops[best_idx]  # Get the operation dict
+                action = best_idx  # Use index for step
             else:
                 selected_op = avai_ops[0]  # Fallback
+                action = 0
             
             # Execute the selected operation
-            avai_ops, _, done = env.step(selected_op)
+            avai_ops, _, done = env.step(action)
             
             if done:
                 break
@@ -248,13 +258,13 @@ class GPPriorityRuleEvolver:
         
         features = {
             'process_time': float(process_time),
-            'remaining_ops': float(job.remaining_op_num()) if job and hasattr(job, 'remaining_op_num') else 1.0,
-            'job_progress': 1.0 - (float(job.remaining_op_num()) / len(job.operations)) if job else 0.5,
+            'remaining_ops': 1.0,  # Simplified
+            'job_progress': 0.5,   # Simplified
             'machine_load': float(machine.avai_time()) if machine and hasattr(machine, 'avai_time') else 0.0,
             'machine_util': float(machine.avai_time()) / (env.jsp_instance.current_time + 1e-6) if machine else 0.0,
             'earliest_start': max(env.jsp_instance.current_time, 
                                 job.current_op().avai_time if job and hasattr(job, 'current_op') else 0),
-            'slack_time': 10.0,  # Placeholder - would need more complex calculation
+            'slack_time': 10.0,  # Simplified
             'current_time': float(env.jsp_instance.current_time),
             'total_jobs': float(len(env.jsp_instance.jobs)),
             'total_machines': float(len(env.jsp_instance.machines))
@@ -348,10 +358,24 @@ class GPPriorityRuleEvolver:
         
         for op in avai_ops:
             features = self._extract_operation_features(env, op)
+            # Convert features dict to tuple in the correct order for GP function
+            feature_values = (
+                features['process_time'],
+                features['remaining_ops'],
+                features['job_progress'],
+                features['machine_load'],
+                features['machine_util'],
+                features['earliest_start'],
+                features['slack_time'],
+                features['current_time'],
+                features['total_jobs'],
+                features['total_machines']
+            )
             try:
-                priority = rule_func(**features)
+                priority = rule_func(*feature_values)
                 priorities.append(float(priority))
-            except:
+            except Exception as e:
+                print(f"Error evaluating rule: {e}")
                 priorities.append(0.0)  # Neutral priority on error
         
         return np.array(priorities)
@@ -393,24 +417,26 @@ class GPRuleCalculator:
         priorities = []
         
         for op in avai_ops:
-            # Extract features (simplified version)
-            features = {
-                'process_time': float(op['process_time']),
-                'remaining_ops': 1.0,  # Placeholder
-                'job_progress': 0.5,   # Placeholder
-                'machine_load': 0.0,   # Placeholder
-                'machine_util': 0.0,   # Placeholder
-                'earliest_start': 0.0, # Placeholder
-                'slack_time': 10.0,    # Placeholder
-                'current_time': float(env.jsp_instance.current_time),
-                'total_jobs': float(len(env.jsp_instance.jobs)),
-                'total_machines': float(len(env.jsp_instance.machines))
-            }
+            # Extract features and convert to tuple for GP function
+            features = self._extract_operation_features(env, op)
+            feature_values = (
+                features['process_time'],
+                features['remaining_ops'],
+                features['job_progress'],
+                features['machine_load'],
+                features['machine_util'],
+                features['earliest_start'],
+                features['slack_time'],
+                features['current_time'],
+                features['total_jobs'],
+                features['total_machines']
+            )
             
             try:
-                priority = self.rule_func(**features)
+                priority = self.rule_func(*feature_values)
                 priorities.append(float(priority))
-            except:
+            except Exception as e:
+                print(f"Error in GP evaluation: {e}")
                 priorities.append(0.0)
         
         return np.array(priorities)

@@ -47,14 +47,20 @@ def evaluate(episode):
             avai_ops = env.load_instance(file)
             while True:
                 data, op_unfinished = env.get_graph_data()
+                
+                # Get window tensor if using offline rules
+                window_tensor = env.get_state_with_windows()
+                
                 action_idx, _ = policy(
                     avai_ops,
                     data,
                     op_unfinished,
                     env.jsp_instance.graph.max_process_time,
                     greedy=True,
+                    window_tensor=window_tensor
                 )
-                avai_ops, _, done = env.step(avai_ops[action_idx])
+                
+                avai_ops, _, done = env.step(action_idx)
                 if done:
                     ms = env.get_makespan()
                     inst_key = os.path.splitext(instance)[0].lower()
@@ -178,14 +184,23 @@ def train():
                 original_indices = list(range(len(avai_ops)))
             
             # 放入网络，得到选择的动作索引(action_idx)和概率(action_prob)
-            # action_idx refers to index in filtered_avai_ops
-            action_idx, action_prob = policy(filtered_avai_ops, data, op_unfinished, env.jsp_instance.graph.max_process_time)
+            # For offline rules, action_idx refers to window index
+            # For operation selection, action_idx refers to index in filtered_avai_ops
+            data, op_unfinished = env.get_graph_data()
+            window_tensor = env.get_state_with_windows()
             
-            # Map action index back to original avai_ops
-            original_action_idx = original_indices[action_idx]
+            action_idx, action_prob = policy(filtered_avai_ops, data, op_unfinished, env.jsp_instance.graph.max_process_time, window_tensor=window_tensor)
+            
+            # Map action index back to original avai_ops if not using offline rules
+            if not getattr(args, 'use_offline_rules', False):
+                original_action_idx = original_indices[action_idx]
+                selected_op = avai_ops[original_action_idx]
+            else:
+                # For offline rules, action_idx is already the window index, step() will handle it
+                selected_op = action_idx
             
             # 环境前进一步，返回下一步的可选工序、奖励、是否结束
-            avai_ops, reward, done = env.step(avai_ops[original_action_idx])
+            avai_ops, reward, done = env.step(selected_op)
 
             # 注意这里的负号！ -reward 的解释：在调度问题中，env.step 返回的通常是增量时间（Cost）。
             # 我们要最小化时间，等价于最大化负的时间。所以把 Cost 变成负数作为 Reward 存进去。
