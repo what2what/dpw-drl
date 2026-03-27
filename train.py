@@ -8,6 +8,7 @@ from torch.optim.lr_scheduler import StepLR
 from params import get_args
 from env.env import JSP_Env
 from model.REINFORCE import REINFORCE
+from model.gp_module import GPPriorityRuleEvolver, GPRuleCalculator
 from heuristic import *
 from torch.utils.tensorboard import SummaryWriter
 import json
@@ -93,11 +94,47 @@ def train():
     print("start Training")
     best_valid_makespan = MAX
 
+    # Initialize GP evolver if using GP-DPW
+    gp_evolver = None
+    if getattr(args, 'use_gp_dpw', False):
+        print("Initializing GP evolver for DPW...")
+        gp_evolver = GPPriorityRuleEvolver(
+            population_size=args.gp_population_size,
+            generations=args.gp_generations,
+            crossover_rate=args.gp_crossover_rate,
+            mutation_rate=args.gp_mutation_rate,
+            max_tree_depth=args.gp_max_tree_depth
+        )
+        # Set args reference for GP evolver
+        gp_evolver.args = args
+
     for episode in range(0, args.episode):
         #每训练1000轮保存一次模型
         if episode % 1000 == 0 and episode > 0:
             torch.save(policy.state_dict(), "./weight/{}/{}".format(args.date, episode))
             evaluate(episode)
+
+        # GP evolution at specified intervals
+        if gp_evolver and episode % args.gp_evolve_interval == 0 and episode > 0:
+            print(f"Episode {episode}: Evolving GP rules...")
+            # Create some environment instances for GP evaluation
+            eval_envs = []
+            for _ in range(5):  # Use 5 instances for GP fitness evaluation
+                eval_env = JSP_Env(args)
+                eval_env.reset()
+                eval_envs.append(eval_env)
+            
+            # Evolve GP rules
+            best_rule_tree = gp_evolver.evolve(eval_envs)
+            
+            # Create GP rule calculator and set it in environment
+            gp_calculator = GPRuleCalculator(best_rule_tree, gp_evolver.toolbox)
+            env.set_gp_rule_calculator(gp_calculator)
+            
+            # Save the best rule
+            os.makedirs(os.path.dirname(args.gp_rule_path), exist_ok=True)
+            gp_evolver.save_rule_tree(best_rule_tree, args.gp_rule_path)
+            print(f"GP rule evolved and saved to {args.gp_rule_path}")
 
         action_probs = []
         # 每一轮开始，重置环境，生成新的 JSP 算例
@@ -115,17 +152,28 @@ def train():
             # 获取图数据
             data, op_unfinished = env.get_graph_data()
             
-            # Apply Dynamic Priority Window (DPW) filtering if enabled
+            # Apply Dynamic Priority Window (DPW) filtering
             use_dpw = getattr(args, 'use_dpw', False)
-            if use_dpw:
+            use_gp_dpw = getattr(args, 'use_gp_dpw', False)
+            
+            if use_gp_dpw and env.gp_rule_calculator is not None:
+                # Use GP-evolved rules
+                dpw_window_size = getattr(args, 'dpw_window_size', 3)
+                filtered_avai_ops, priority_mask = env.get_dynamic_priority_window_from_gp(
+                    avai_ops, 
+                    window_size=dpw_window_size
+                )
+                original_indices = np.where(priority_mask)[0].tolist() if len(priority_mask) > 0 else list(range(len(avai_ops)))
+            elif use_dpw:
+                # Use static heuristics
                 dpw_window_size = getattr(args, 'dpw_window_size', 3)
                 filtered_avai_ops, priority_mask = env.get_dynamic_priority_window(
                     avai_ops, 
                     window_size=dpw_window_size
                 )
-                # Get the indices of filtered operations in the original list
                 original_indices = np.where(priority_mask)[0].tolist() if len(priority_mask) > 0 else list(range(len(avai_ops)))
             else:
+                # No DPW filtering
                 filtered_avai_ops = avai_ops
                 original_indices = list(range(len(avai_ops)))
             

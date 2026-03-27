@@ -32,8 +32,18 @@ def get_args():
     parser.add_argument('--load_weight', type=str, default='./weight/RS_FJSP/best')
     
     # args for Dynamic Priority Window (DPW)
-    parser.add_argument('--use_dpw', type=bool, default=False, help='Whether to enable Dynamic Priority Window mechanism')
+    parser.add_argument('--use_dpw', type=bool, default=True, help='Whether to enable Dynamic Priority Window mechanism')
     parser.add_argument('--dpw_window_size', type=int, default=3, help='Size of the dynamic priority window (number of high-priority operations to consider)')
+    
+    # args for Genetic Programming (GP) DPW
+    parser.add_argument('--use_gp_dpw', type=bool, default=False, help='Whether to use GP-evolved rules for DPW instead of static heuristics')
+    parser.add_argument('--gp_population_size', type=int, default=100, help='Population size for GP evolution')
+    parser.add_argument('--gp_generations', type=int, default=50, help='Number of generations for GP evolution')
+    parser.add_argument('--gp_crossover_rate', type=float, default=0.7, help='Crossover rate for GP')
+    parser.add_argument('--gp_mutation_rate', type=float, default=0.2, help='Mutation rate for GP')
+    parser.add_argument('--gp_max_tree_depth', type=int, default=5, help='Maximum depth of GP rule trees')
+    parser.add_argument('--gp_evolve_interval', type=int, default=1000, help='Interval (episodes) for GP evolution during training')
+    parser.add_argument('--gp_rule_path', type=str, default='./weight/GP_RULES/best_rule.pkl', help='Path to save/load GP rule trees')
 
     args = parser.parse_args()
     return args

@@ -3,6 +3,7 @@ import numpy as np
 from params import get_args
 from env.env import JSP_Env
 from model.REINFORCE import REINFORCE
+from model.gp_module import GPPriorityRuleEvolver, GPRuleCalculator
 import time
 import os
 
@@ -15,17 +16,28 @@ def test():
         while True:
             data, op_unfinished= env.get_graph_data()
             
-            # Apply Dynamic Priority Window (DPW) filtering if enabled
+            # Apply Dynamic Priority Window (DPW) filtering
             use_dpw = getattr(args, 'use_dpw', False)
-            if use_dpw:
+            use_gp_dpw = getattr(args, 'use_gp_dpw', False)
+            
+            if use_gp_dpw and env.gp_rule_calculator is not None:
+                # Use GP-evolved rules
+                dpw_window_size = getattr(args, 'dpw_window_size', 3)
+                filtered_avai_ops, priority_mask = env.get_dynamic_priority_window_from_gp(
+                    avai_ops, 
+                    window_size=dpw_window_size
+                )
+                original_indices = np.where(priority_mask)[0].tolist() if len(priority_mask) > 0 else list(range(len(avai_ops)))
+            elif use_dpw:
+                # Use static heuristics
                 dpw_window_size = getattr(args, 'dpw_window_size', 3)
                 filtered_avai_ops, priority_mask = env.get_dynamic_priority_window(
                     avai_ops, 
                     window_size=dpw_window_size
                 )
-                # Get the indices of filtered operations in the original list
                 original_indices = np.where(priority_mask)[0].tolist() if len(priority_mask) > 0 else list(range(len(avai_ops)))
             else:
+                # No DPW filtering
                 filtered_avai_ops = avai_ops
                 original_indices = list(range(len(avai_ops)))
             
@@ -54,6 +66,21 @@ if __name__ == '__main__':
     os.makedirs('./result/{}/'.format(args.date), exist_ok=True)
     
     policy.load_state_dict(torch.load(args.load_weight, map_location=args.device), False)
+    
+    # Load GP rule if using GP-DPW
+    use_gp_dpw = getattr(args, 'use_gp_dpw', False)
+    if use_gp_dpw:
+        if os.path.exists(args.gp_rule_path):
+            print(f"Loading GP rule from {args.gp_rule_path}")
+            gp_evolver = GPPriorityRuleEvolver()  # Create instance to get toolbox
+            gp_evolver.args = args
+            best_rule_tree = gp_evolver.load_rule_tree(args.gp_rule_path)
+            gp_calculator = GPRuleCalculator(best_rule_tree, gp_evolver.toolbox)
+            env.set_gp_rule_calculator(gp_calculator)
+            print("GP rule loaded and set in environment")
+        else:
+            print(f"Warning: GP rule path {args.gp_rule_path} not found. Falling back to static DPW.")
+    
     with torch.no_grad():
         test()
                     
